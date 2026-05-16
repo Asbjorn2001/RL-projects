@@ -13,13 +13,12 @@ from torch.utils.tensorboard.writer import SummaryWriter
 State = np.ndarray
 Action = int
 BatchTensors = tt.Tuple[
-    torch.ByteTensor,  # state
+    torch.Tensor,  # state
     torch.LongTensor,  # action
     torch.Tensor,  # reward
     torch.BoolTensor,  # done
-    torch.ByteTensor,  # next state
+    torch.Tensor,  # next state
 ]
-
 
 @dataclass
 class Experience:
@@ -48,11 +47,9 @@ class DQN(nn.Module):
             nn.Linear(size, 512), nn.ReLU(), nn.Linear(512, n_actions)
         )
 
-    def forward(self, x: torch.ByteTensor):
-        # scale on GPU
-        xx = x / 255.0
-        return self.fc(self.conv(xx))
-
+    def forward(self, x: torch.Tensor):
+        return self.fc(self.conv(x))
+      
 
 class ExperienceBuffer:
     def __init__(self, capacity: int) -> None:
@@ -75,6 +72,7 @@ class Agent:
         self.env = env
         self.exp_buffer = exp_buffer
         self._reset()
+        print(f"Action space: {env.action_space}, observation space: {env.observation_space}")
 
     def _reset(self):
         self.state, _ = self.env.reset()
@@ -87,17 +85,18 @@ class Agent:
         if np.random.random() < epsilon:
             action = self.env.action_space.sample()
         else:
-            state_t = torch.as_tensor(self.state, device=device)
+            state_t = torch.as_tensor(self.state).to(device)
             state_t.unsqueeze_(0)
             qvals_t = net(state_t)
-            action = torch.argmax(qvals_t, dim=1).item()
+            act_v = torch.argmax(qvals_t, dim=1)
+            action = int(act_v.item())
 
         next_state, reward, terminated, truncated, _ = self.env.step(action)
         is_done = terminated or truncated
 
         self.total_reward += float(reward)
         self.exp_buffer.put(
-            Experience(self.state, int(action), float(reward), is_done, next_state)
+            Experience(state=self.state, action=int(action), reward=float(reward), done=is_done, next_state=next_state)
         )
         self.state = next_state
 
@@ -117,11 +116,11 @@ def batch_to_tensors(batch: tt.List[Experience], device: torch.device) -> BatchT
         dones.append(e.done)
         new_state.append(e.next_state)
 
-    states_t = torch.ByteTensor(np.asarray(states), device=device)
-    actions_t = torch.LongTensor(actions, device=device)
-    rewards_t = torch.FloatTensor(rewards, device=device)
-    dones_t = torch.BoolTensor(dones, device=device)
-    new_states_t = torch.ByteTensor(np.asarray(new_state), device=device)
+    states_t = torch.as_tensor(np.asarray(states)).to(device)
+    actions_t = torch.LongTensor(actions).to(device)
+    rewards_t = torch.FloatTensor(rewards).to(device)
+    dones_t = torch.BoolTensor(dones).to(device)
+    new_states_t = torch.as_tensor(np.asarray(new_state)).to(device)
 
     return states_t, actions_t, rewards_t, dones_t, new_states_t
 
@@ -145,7 +144,6 @@ def calc_loss(
     expected_state_action_values = next_state_values * GAMMA + rewards_t
     return nn.MSELoss()(state_action_values, expected_state_action_values)
 
-
 MEAN_REWARD_BOUND = 19
 
 GAMMA = 0.99
@@ -159,7 +157,6 @@ EPSILON_DECAY_LAST_FRAME = 150000
 EPSILON_START = 1.0
 EPSILON_FINAL = 0.01
 
-
 def make_env():
     gym.register_envs(ale_py)
 
@@ -170,7 +167,7 @@ def make_env():
         video_folder="saved-video-folder",
         name_prefix="pong",
     )
-    env = gym.wrappers.AtariPreprocessing(env, scale_obs=True)
+    env = gym.wrappers.AtariPreprocessing(env, scale_obs=True, noop_max=0)
     env = gym.wrappers.FrameStackObservation(env, 4)
 
     return env
